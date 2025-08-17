@@ -1,0 +1,2075 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+backend/.env
+backend/app/__init__.py
+backend/app/auth.py
+backend/app/routes.py
+backend/app/services.py
+backend/app/utils.py
+backend/data/bookings.csv
+backend/data/guesthouses.csv
+backend/data/users.csv
+backend/run.py
+frontend/.env
+frontend/.gitignore
+frontend/eslint.config.js
+frontend/index.html
+frontend/package.json
+frontend/postcss.config.js
+frontend/public/vite.svg
+frontend/README.md
+frontend/src/App.css
+frontend/src/App.jsx
+frontend/src/assets/react.svg
+frontend/src/components/Admin/AdminDashboard.jsx
+frontend/src/components/Admin/AllBookingsTable.jsx
+frontend/src/components/Admin/PendingApprovalsTable.jsx
+frontend/src/components/Auth/LoginPage.jsx
+frontend/src/components/Shared/Navbar.jsx
+frontend/src/components/Shared/ProtectedRoute.jsx
+frontend/src/components/User/BookingModal.jsx
+frontend/src/components/User/GuesthouseCard.jsx
+frontend/src/components/User/GuesthouseList.jsx
+frontend/src/components/User/MyBookings.jsx
+frontend/src/components/User/UserDashboard.jsx
+frontend/src/context/AuthContext.jsx
+frontend/src/index.css
+frontend/src/main.jsx
+frontend/src/services/api.js
+frontend/tailwind.config.js
+frontend/vite.config.js
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="backend/.env">
+FLASK_APP=run.py
+FLASK_ENV=development # or production
+JWT_SECRET_KEY=your-super-secret-and-long-key # Change this!
+</file>
+
+<file path="backend/app/__init__.py">
+from flask import Flask
+from flask_cors import CORS
+from flask_jwt_extended import JWTManager
+from dotenv import load_dotenv
+import os
+from .utils import BOOKINGS_FILE, DATABASE_FILE # For path reference
+
+def create_app():
+    app = Flask(__name__, instance_relative_config=True) # instance_relative_config=True for instance folder
+    load_dotenv(os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')) # Load .env from backend directory
+
+    app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'default-fallback-secret-key') # Use env var
+    app.config['JWT_TOKEN_LOCATION'] = ['headers']
+    
+    # Ensure instance folder exists for SQLite DB
+    try:
+        os.makedirs(app.instance_path, exist_ok=True)
+    except OSError:
+        pass # Dectory already exists
+
+    print(f"Instance path: {app.instance_path}")
+    print(f"Bookings CSV path: {os.path.abspath(BOOKINGS_FILE)}")
+    print(f"Database path: {os.path.abspath(DATABASE_FILE)}")
+
+
+    CORS(app, resources={r"/api/*": {"origins": "*"}}) # Allow all origins for dev
+    JWTManager(app)
+
+    from .routes import api_bp
+    app.register_blueprint(api_bp)
+    
+    from .services import init_bookings_csv
+    with app.app_context(): # ensure bookings.csv is initialized if needed within app context
+        init_bookings_csv()
+
+    return app
+</file>
+
+<file path="backend/app/auth.py">
+from flask import request, jsonify
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, get_jwt
+from functools import wraps
+from .services import user_service
+
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    user = user_service.get_user(username)
+
+    if user and user['password'] == password:
+        additional_claims = {"role": user['role']}
+        access_token = create_access_token(identity=username, additional_claims=additional_claims)
+        return jsonify(access_token=access_token, username=user['username'], role=user['role']), 200
+    
+    return jsonify({"msg": "incorrect username or password"}), 401
+
+def admin_required(fn):
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        claims = get_jwt()
+        if claims.get("role") != "admin":
+            return jsonify(msg="Admins only!"), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+def user_required(fn): # General user, can be admin too
+    @wraps(fn)
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        # No specific role check beyond being logged in
+        return fn(*args, **kwargs)
+    return wrapper
+</file>
+
+<file path="backend/app/routes.py">
+from flask import Blueprint, jsonify, request
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from .services import guesthouse_service, booking_service, export_bookings_to_sqlite
+from .auth import login as auth_login, admin_required, user_required
+from .utils import parse_date_string, format_date_obj # For date validation if needed
+
+api_bp = Blueprint('api', __name__, url_prefix='/api')
+
+@api_bp.route('/login', methods=['POST'])
+def login_route():
+    return auth_login()
+
+@api_bp.route('/guesthouses', methods=['GET'])
+@jwt_required() # All logged-in users can see guesthouses
+def get_guesthouses():
+    guesthouses = guesthouse_service.get_all_guesthouses()
+    return jsonify(guesthouses), 200
+
+@api_bp.route('/bookings/request', methods=['POST'])
+@user_required # Any logged in user can request
+def request_booking():
+    data = request.get_json()
+    current_user = get_jwt_identity()
+    
+    guesthouse_id = data.get('guesthouse_id')
+    start_date_str = data.get('start_date') # Expecting "DD-MM-YYYY"
+    end_date_str = data.get('end_date')     # Expecting "DD-MM-YYYY"
+
+    if not all([guesthouse_id, start_date_str, end_date_str]):
+        return jsonify({"msg": "Missing required fields: guesthouse_id, start_date, end_date"}), 400
+
+    # Basic date validation
+    start_dt = parse_date_string(start_date_str)
+    end_dt = parse_date_string(end_date_str)
+
+    if not start_dt or not end_dt:
+        return jsonify({"msg": "Invalid date format. Use DD-MM-YYYY"}), 400
+    if start_dt > end_dt:
+        return jsonify({"msg": "Start date cannot be after end date."}), 400
+
+    booking_id, message = booking_service.create_booking_request(
+        guesthouse_id, current_user, start_date_str, end_date_str
+    )
+    if booking_id:
+        return jsonify({"msg": message, "booking_id": booking_id}), 201
+    else:
+        return jsonify({"msg": message}), 409 # 409 Conflict if not available
+
+@api_bp.route('/bookings/my', methods=['GET'])
+@user_required
+def get_my_bookings():
+    current_user = get_jwt_identity()
+    bookings = booking_service.get_user_bookings(current_user)
+    return jsonify(bookings), 200
+
+@api_bp.route('/bookings/cancel/<booking_id>', methods=['POST']) # POST or PUT/PATCH
+@user_required
+def cancel_my_booking(booking_id):
+    current_user = get_jwt_identity()
+    success, message = booking_service.cancel_booking(booking_id, current_user)
+    if success:
+        return jsonify({"msg": message}), 200
+    else:
+        return jsonify({"msg": message}), 400 # Or 403 if permission issue, 404 if not found
+
+# --- Admin Routes ---
+@api_bp.route('/admin/bookings/all', methods=['GET'])
+@admin_required
+def get_all_bookings_admin():
+    bookings = booking_service.get_all_bookings()
+    return jsonify(bookings), 200
+
+@api_bp.route('/admin/bookings/pending', methods=['GET'])
+@admin_required
+def get_pending_bookings_admin():
+    bookings = booking_service.get_pending_bookings()
+    return jsonify(bookings), 200
+
+@api_bp.route('/admin/bookings/approve/<booking_id>', methods=['POST'])
+@admin_required
+def approve_booking_admin(booking_id):
+    current_admin = get_jwt_identity() # For logging if needed
+    success, message = booking_service.update_booking_status(booking_id, 'confirmed', current_admin)
+    if success:
+        # After successful approval, consider re-exporting to SQLite or make it a separate action
+        # export_bookings_to_sqlite()
+        return jsonify({"msg": message}), 200
+    else:
+        return jsonify({"msg": message}), 400
+
+@api_bp.route('/admin/bookings/reject/<booking_id>', methods=['POST'])
+@admin_required
+def reject_booking_admin(booking_id):
+    current_admin = get_jwt_identity()
+    success, message = booking_service.update_booking_status(booking_id, 'rejected', current_admin) # 'rejected' or 'cancelled'
+    if success:
+        # export_bookings_to_sqlite()
+        return jsonify({"msg": message}), 200
+    else:
+        return jsonify({"msg": message}), 400
+
+@api_bp.route('/admin/export-db', methods=['POST']) # Could be GET if no body needed
+@admin_required
+def export_db_route():
+    booking_service._load_bookings() # Ensure latest bookings are loaded from CSV before export
+    success, message = export_bookings_to_sqlite()
+    if success:
+        return jsonify({"msg": message}), 200
+    else:
+        return jsonify({"msg": message}), 500
+
+# Health check endpoint
+@api_bp.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+</file>
+
+<file path="backend/app/services.py">
+import pandas as pd
+import uuid
+from datetime import datetime
+import os
+import sqlite3
+from .utils import (
+    USERS_FILE, GUESTHOUSES_FILE, BOOKINGS_FILE, DATABASE_FILE,
+    parse_date_string, format_date_obj, check_date_overlap, DATE_FORMAT
+)
+
+# Ensure data directory and files exist
+os.makedirs(os.path.dirname(USERS_FILE), exist_ok=True)
+
+def init_bookings_csv():
+    if not os.path.exists(BOOKINGS_FILE):
+        df = pd.DataFrame(columns=['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at'])
+        df.to_csv(BOOKINGS_FILE, index=False)
+        print(f"DEBUG: {BOOKINGS_FILE} created.")
+    else:
+        try:
+            df = pd.read_csv(BOOKINGS_FILE)
+            required_cols = ['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at']
+            if not all(col in df.columns for col in required_cols):
+                print(f"DEBUG: Warning - {BOOKINGS_FILE} has missing columns. Re-initializing with headers.")
+                df_empty = pd.DataFrame(columns=required_cols)
+                df_empty.to_csv(BOOKINGS_FILE, index=False)
+        except pd.errors.EmptyDataError:
+            print(f"DEBUG: Warning - {BOOKINGS_FILE} is empty. Initializing with headers.")
+            df_empty = pd.DataFrame(columns=['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at'])
+            df_empty.to_csv(BOOKINGS_FILE, index=False)
+
+
+init_bookings_csv() # Initialize bookings.csv on module load
+
+def export_bookings_to_sqlite():
+    """Exports the current bookings.csv to an SQLite database."""
+    if not os.path.exists(BOOKINGS_FILE):
+        print(f"DEBUG export_bookings_to_sqlite: {BOOKINGS_FILE} not found, skipping export.")
+        return False, f"{BOOKINGS_FILE} not found."
+
+    try:
+        # Ensure we read the latest from disk
+        df = pd.read_csv(BOOKINGS_FILE)
+        if df.empty and os.path.getsize(BOOKINGS_FILE) > 0 :
+            print(f"WARNING export_bookings_to_sqlite: {BOOKINGS_FILE} was read as empty by pandas but has size. This might indicate a malformed CSV. Proceeding with empty DataFrame for DB.")
+            # For safety, treat as empty if pandas can't parse structured data despite file size
+            df = pd.DataFrame(columns=['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at'])
+        elif df.empty:
+            print(f"DEBUG export_bookings_to_sqlite: {BOOKINGS_FILE} is empty, creating empty table in DB.")
+            # No return here, we want to create an empty table if CSV is empty.
+    except pd.errors.EmptyDataError:
+        print(f"DEBUG export_bookings_to_sqlite: {BOOKINGS_FILE} is empty (EmptyDataError), creating empty table in DB.")
+        df = pd.DataFrame(columns=['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at'])
+    except Exception as e:
+        print(f"ERROR export_bookings_to_sqlite: Failed to read {BOOKINGS_FILE}: {str(e)}. Skipping export.")
+        return False, f"Failed to read {BOOKINGS_FILE}: {str(e)}"
+
+
+    os.makedirs(os.path.dirname(DATABASE_FILE), exist_ok=True)
+    conn = sqlite3.connect(DATABASE_FILE)
+    try:
+        # Replace the entire table each time.
+        df.to_sql('bookings', conn, if_exists='replace', index=False)
+        conn.close()
+        return True, f"Bookings exported to {DATABASE_FILE} successfully."
+    except Exception as e:
+        conn.close()
+        print(f"ERROR export_bookings_to_sqlite: Error writing to SQLite: {str(e)}")
+        return False, f"Error exporting to SQLite: {str(e)}"
+
+class UserService:
+    def __init__(self):
+        try:
+            self.users_df = pd.read_csv(USERS_FILE)
+        except FileNotFoundError:
+            print(f"ERROR: {USERS_FILE} not found. Please create it with columns: username, password, role")
+            self.users_df = pd.DataFrame(columns=['username', 'password', 'role'])
+        except pd.errors.EmptyDataError:
+             print(f"WARNING: {USERS_FILE} is empty. Please populate it.")
+             self.users_df = pd.DataFrame(columns=['username', 'password', 'role'])
+
+
+    def get_user(self, username):
+        user = self.users_df[self.users_df['username'] == username]
+        if not user.empty:
+            return user.iloc[0].to_dict()
+        return None
+
+class GuesthouseService:
+    def __init__(self):
+        try:
+            self.guesthouses_df = pd.read_csv(GUESTHOUSES_FILE)
+            if 'id' in self.guesthouses_df.columns:
+                 self.guesthouses_df['id'] = self.guesthouses_df['id'].astype(str)
+        except FileNotFoundError:
+            print(f"ERROR: {GUESTHOUSES_FILE} not found. Please create it with columns: id, location, name, capacity")
+            self.guesthouses_df = pd.DataFrame(columns=['id', 'location', 'name', 'capacity'])
+        except pd.errors.EmptyDataError:
+            print(f"WARNING: {GUESTHOUSES_FILE} is empty. Please populate it.")
+            self.guesthouses_df = pd.DataFrame(columns=['id', 'location', 'name', 'capacity'])
+
+
+    def get_all_guesthouses(self):
+        return self.guesthouses_df.to_dict(orient='records')
+
+    def get_guesthouse_by_id(self, guesthouse_id):
+        guesthouse = self.guesthouses_df[self.guesthouses_df['id'].astype(str) == str(guesthouse_id)]
+        if not guesthouse.empty:
+            return guesthouse.iloc[0].to_dict()
+        return None
+
+class BookingService:
+    def __init__(self):
+        self._load_bookings()
+        # Optionally, ensure DB is synced on startup if CSV exists and DB might be stale or missing
+        self._sync_db_on_init()
+
+    def _load_bookings(self):
+        try:
+            self.bookings_df = pd.read_csv(BOOKINGS_FILE)
+            if 'guesthouse_id' in self.bookings_df.columns:
+                self.bookings_df['guesthouse_id'] = self.bookings_df['guesthouse_id'].astype(str)
+            for col in ['start_date', 'end_date', 'booked_at']:
+                if col in self.bookings_df.columns:
+                    self.bookings_df[col] = self.bookings_df[col].astype(str).fillna('') # fillna for dates
+                else: # Add missing date columns if they don't exist
+                    self.bookings_df[col] = ''
+
+
+            # Ensure booking_id exists and fill NaNs
+            if 'booking_id' not in self.bookings_df.columns:
+                self.bookings_df['booking_id'] = [str(uuid.uuid4()) for _ in range(len(self.bookings_df))]
+                self._save_bookings_and_export_to_db()
+            elif self.bookings_df['booking_id'].isnull().any():
+                self.bookings_df['booking_id'] = self.bookings_df['booking_id'].apply(lambda x: x if pd.notnull(x) and x != '' else str(uuid.uuid4()))
+                self._save_bookings_and_export_to_db() # Save and export if IDs generated
+
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            print(f"DEBUG: {BOOKINGS_FILE} is empty or not found. Initializing empty bookings DataFrame.")
+            self.bookings_df = pd.DataFrame(columns=['booking_id', 'guesthouse_id', 'username', 'start_date', 'end_date', 'status', 'booked_at'])
+            # No need to save here, as init_bookings_csv handles creating an empty file.
+            # We will save when a booking is made.
+
+    def _save_bookings_and_export_to_db(self):
+        """Saves the bookings DataFrame to CSV and then exports to SQLite."""
+        try:
+            self.bookings_df.to_csv(BOOKINGS_FILE, index=False)
+            print(f"DEBUG: Saved {BOOKINGS_FILE}")
+            success, message = export_bookings_to_sqlite()
+            if success:
+                print(f"DEBUG: SQLite DB updated successfully: {message}")
+            else:
+                print(f"ERROR: SQLite export failed after saving bookings: {message}")
+        except Exception as e:
+            print(f"ERROR: Failed to save bookings CSV or export to DB: {str(e)}")
+
+
+    def _sync_db_on_init(self):
+        """Ensures DB is synced with CSV upon service initialization if CSV exists."""
+        if os.path.exists(BOOKINGS_FILE): # Only sync if CSV exists
+            print("DEBUG: Performing initial sync of bookings.csv to SQLite DB.")
+            success, message = export_bookings_to_sqlite()
+            if success:
+                print(f"DEBUG: Initial DB sync successful: {message}")
+            else:
+                print(f"ERROR: Initial DB sync failed: {message}")
+        else:
+            print(f"DEBUG: {BOOKINGS_FILE} does not exist. Skipping initial DB sync.")
+
+
+    def is_guesthouse_available(self, guesthouse_id, start_date_str, end_date_str):
+        guesthouse_id = str(guesthouse_id)
+        
+        relevant_bookings = self.bookings_df[
+            (self.bookings_df['guesthouse_id'] == guesthouse_id) &
+            (self.bookings_df['status'].isin(['confirmed', 'pending']))
+        ]
+
+        for _, booking in relevant_bookings.iterrows():
+            # Ensure booking dates are valid before checking overlap
+            if booking['start_date'] and booking['end_date']:
+                if check_date_overlap(start_date_str, end_date_str, booking['start_date'], booking['end_date']):
+                    return False
+        return True
+
+    def create_booking_request(self, guesthouse_id, username, start_date_str, end_date_str):
+        guesthouse_id = str(guesthouse_id)
+        if not self.is_guesthouse_available(guesthouse_id, start_date_str, end_date_str):
+            return None, "Guesthouse not available for selected dates."
+
+        new_booking_id = str(uuid.uuid4())
+        # Use a consistent format for booked_at, which can also be DATE_FORMAT
+        # Or for more precision: datetime.now().isoformat()
+        booked_at_str = datetime.now().strftime(DATE_FORMAT)
+
+        new_booking_data = {
+            'booking_id': new_booking_id,
+            'guesthouse_id': guesthouse_id,
+            'username': username,
+            'start_date': start_date_str,
+            'end_date': end_date_str,
+            'status': 'pending',
+            'booked_at': booked_at_str
+        }
+        
+        # If bookings_df is empty and has no columns (first run after init_bookings_csv made an empty file)
+        if self.bookings_df.empty and not list(self.bookings_df.columns):
+            self.bookings_df = pd.DataFrame([new_booking_data])
+        else:
+            new_booking_df_row = pd.DataFrame([new_booking_data])
+            self.bookings_df = pd.concat([self.bookings_df, new_booking_df_row], ignore_index=True)
+        
+        self._save_bookings_and_export_to_db()
+        return new_booking_id, "Booking request submitted successfully."
+
+    def get_user_bookings(self, username):
+        if self.bookings_df.empty or 'username' not in self.bookings_df.columns:
+            return []
+        user_bookings = self.bookings_df[self.bookings_df['username'] == username]
+        return user_bookings.to_dict(orient='records')
+
+    def get_all_bookings(self):
+        if self.bookings_df.empty:
+            return []
+            
+        gs_service_instance = GuesthouseService() # Get fresh instance if guesthouses can change
+        guesthouses_df = gs_service_instance.guesthouses_df[['id', 'name']].copy()
+        guesthouses_df.rename(columns={'id': 'guesthouse_id', 'name': 'guesthouse_name'}, inplace=True)
+        guesthouses_df['guesthouse_id'] = guesthouses_df['guesthouse_id'].astype(str)
+        
+        # Ensure self.bookings_df has guesthouse_id for merging
+        if 'guesthouse_id' not in self.bookings_df.columns:
+            print("WARNING: 'guesthouse_id' column missing in bookings. Cannot merge guesthouse names.")
+            # Add a placeholder or return raw bookings
+            temp_bookings_df = self.bookings_df.copy()
+            temp_bookings_df['guesthouse_name'] = 'N/A (Missing ID)'
+            return temp_bookings_df.to_dict(orient='records')
+
+        merged_df = pd.merge(self.bookings_df.copy(), guesthouses_df, on='guesthouse_id', how='left')
+        merged_df['guesthouse_name'].fillna('Unknown Guesthouse', inplace=True)
+        return merged_df.to_dict(orient='records')
+
+
+    def get_pending_bookings(self):
+        if self.bookings_df.empty or 'status' not in self.bookings_df.columns:
+            return []
+        pending_df = self.bookings_df[self.bookings_df['status'] == 'pending'].copy() # Use .copy()
+        
+        if pending_df.empty:
+            return []
+
+        gs_service_instance = GuesthouseService()
+        guesthouses_df = gs_service_instance.guesthouses_df[['id', 'name']].copy()
+        guesthouses_df.rename(columns={'id': 'guesthouse_id', 'name': 'guesthouse_name'}, inplace=True)
+        guesthouses_df['guesthouse_id'] = guesthouses_df['guesthouse_id'].astype(str)
+        
+        if 'guesthouse_id' not in pending_df.columns:
+            print("WARNING: 'guesthouse_id' column missing in pending bookings. Cannot merge guesthouse names.")
+            pending_df['guesthouse_name'] = 'N/A (Missing ID)'
+            return pending_df.to_dict(orient='records')
+            
+        merged_df = pd.merge(pending_df, guesthouses_df, on='guesthouse_id', how='left')
+        merged_df['guesthouse_name'].fillna('Unknown Guesthouse', inplace=True)
+        return merged_df.to_dict(orient='records')
+
+    def update_booking_status(self, booking_id, new_status, admin_username=None):
+        if self.bookings_df.empty or 'booking_id' not in self.bookings_df.columns:
+            return False, "No bookings found."
+        if booking_id not in self.bookings_df['booking_id'].values:
+            return False, "Booking ID not found."
+        
+        booking_to_update = self.bookings_df[self.bookings_df['booking_id'] == booking_id].iloc[0]
+
+        if new_status == 'confirmed':
+            guesthouse_id = booking_to_update['guesthouse_id']
+            start_date = booking_to_update['start_date']
+            end_date = booking_to_update['end_date']
+
+            # Temporarily exclude the current booking from availability check
+            original_bookings_df_snapshot = self.bookings_df.copy() # For restore if check fails
+            # Create a temporary df for availability check excluding the one being confirmed
+            temp_check_df = self.bookings_df[self.bookings_df['booking_id'] != booking_id]
+            
+            # Simulate is_guesthouse_available on this temp_check_df
+            available = True
+            relevant_bookings_for_check = temp_check_df[
+                (temp_check_df['guesthouse_id'] == str(guesthouse_id)) &
+                (temp_check_df['status'].isin(['confirmed', 'pending'])) # Check against other pending too
+            ]
+            for _, BKG in relevant_bookings_for_check.iterrows():
+                 if BKG['start_date'] and BKG['end_date']:
+                    if check_date_overlap(start_date, end_date, BKG['start_date'], BKG['end_date']):
+                        available = False
+                        break
+            
+            if not available:
+                return False, "Cannot confirm: Guesthouse became unavailable due to another overlapping booking."
+            # No need to restore self.bookings_df here as we only used a copy for check
+
+        self.bookings_df.loc[self.bookings_df['booking_id'] == booking_id, 'status'] = new_status
+        self._save_bookings_and_export_to_db()
+        return True, f"Booking {booking_id} status updated to {new_status}."
+
+    def cancel_booking(self, booking_id, username):
+        if self.bookings_df.empty or 'booking_id' not in self.bookings_df.columns:
+            return False, "No bookings found to cancel."
+
+        booking_matches = self.bookings_df[
+            (self.bookings_df['booking_id'] == booking_id) &
+            (self.bookings_df['username'] == username)
+        ]
+
+        if booking_matches.empty:
+            return False, "Booking not found or you don't have permission to cancel."
+
+        booking_idx = booking_matches.index[0] # Get the index of the first match
+        current_status = self.bookings_df.loc[booking_idx, 'status']
+
+        if current_status == 'cancelled':
+             return False, "Booking already cancelled."
+        
+        if current_status in ['pending', 'confirmed']:
+            self.bookings_df.loc[booking_idx, 'status'] = 'cancelled'
+            self._save_bookings_and_export_to_db()
+            return True, "Booking cancelled successfully."
+        else:
+            return False, f"Cannot cancel booking with status: {current_status}."
+
+# Instantiate services (Global instances)
+user_service = UserService()
+guesthouse_service = GuesthouseService()
+booking_service = BookingService() # This will now also call _sync_db_on_init
+</file>
+
+<file path="backend/app/utils.py">
+import pandas as pd
+from datetime import datetime
+
+DATA_DIR = 'data'
+USERS_FILE = f'{DATA_DIR}/users.csv'
+GUESTHOUSES_FILE = f'{DATA_DIR}/guesthouses.csv'
+BOOKINGS_FILE = f'{DATA_DIR}/bookings.csv'
+DATABASE_FILE = 'instance/bookings.db' # SQLite DB path
+
+DATE_FORMAT = "%d-%m-%Y" # As per your screenshot for bookings.csv
+
+def parse_date_string(date_str):
+    if not date_str or pd.isna(date_str):
+        return None
+    try:
+        return datetime.strptime(str(date_str), DATE_FORMAT).date()
+    except ValueError:
+        return None # Or raise an error
+
+def format_date_obj(date_obj):
+    if not date_obj:
+        return None
+    return date_obj.strftime(DATE_FORMAT)
+
+def check_date_overlap(start1, end1, start2, end2):
+    """Checks if two date ranges overlap."""
+    s1 = parse_date_string(start1)
+    e1 = parse_date_string(end1)
+    s2 = parse_date_string(start2)
+    e2 = parse_date_string(end2)
+
+    if not all([s1, e1, s2, e2]): # If any date is invalid, assume no overlap to be safe
+        return False
+    return s1 <= e2 and s2 <= e1
+</file>
+
+<file path="backend/data/bookings.csv">
+booking_id,guesthouse_id,username,start_date,end_date,status,booked_at
+f13a5ed9-00f9-4bed-b52f-3a3a62419053,3,Anubhav123,02-06-2025,10-06-2025,confirmed,31-05-2025
+03b289e0-6a63-488c-a892-f9880ad10614,2,Anubhav123,01-06-2025,10-06-2025,rejected,31-05-2025
+a8d8f53a-42e3-45e9-a1c6-00888f6b43ab,5,Anubhav123,02-06-2025,10-06-2025,confirmed,31-05-2025
+6861923d-7beb-4675-8dbd-12e495eefd45,4,Anubhav123,02-06-2025,10-06-2025,cancelled,31-05-2025
+178ace72-6c3a-480f-a1dd-3cd97c60df00,8,Anubhav123,03-06-2025,11-06-2025,confirmed,31-05-2025
+08f753fb-2f03-4c8d-a95a-a653c28004fd,21,testuser,04-06-2025,11-06-2025,rejected,31-05-2025
+</file>
+
+<file path="backend/data/guesthouses.csv">
+id,location,name,capacity
+1,Shillong,NEEPCO Hillside Guest House,10
+2,Guwahati,NEEPCO Riverfront,5
+3,Agartala,NEEPCO Tripura House,8
+4,Itanagar,NEEPCO Capital Lodge,6
+5,Aizawl,NEEPCO Valley View Retreat,7
+6,Kohima,NEEPCO Highland Guest Inn,5
+7,Imphal,NEEPCO Lotus Lake Stay,9
+8,Silchar,NEEPCO Riverside Homestay,4
+9,Dibrugarh,NEEPCO Tea Garden Rest House,6
+10,Tawang,NEEPCO Snowpeak Guest Chalet,3
+11,Dimapur,NEEPCO Heritage Lodge,8
+12,Agra,NEEPCO Taj View Guest House,4
+13,Varanasi,NEEPCO Ganges Retreat,5
+14,Jaipur,NEEPCO Pink City Lodge,6
+15,Leh,NEEPCO Himalayan Retreat,7
+16,Manali,NEEPCO Mountain View Lodge,8
+17,Shimla,NEEPCO Hilltop Lodge,5
+18,Mussoorie,NEEPCO Cloud View Lodge,6
+19,Nainital,NEEPCO Lakeview Lodge,7
+20,Rishikesh,NEEPCO Riverbank Lodge,8
+21,Haridwar,NEEPCO Ganga Lodge,5
+</file>
+
+<file path="backend/data/users.csv">
+username,password,role
+Anubhav123,securepass,user
+admin01,adminpass,admin
+testuser,testpass,user
+johndoe,john123,user
+janedoe,jane456,user
+neepco_admin,rootadmin,admin
+rahul.neepco,rahul789,user
+priya.kakati,priya123,user
+admin.north,nadmin321,admin
+guest01,guest01pass,user
+Reetooparna,ma123,user
+Jupi222,gahori123,user
+</file>
+
+<file path="backend/run.py">
+from app import create_app
+
+app = create_app()
+
+if __name__ == '__main__':
+    # Ensure services are loaded, especially if they initialize files like bookings.csv
+    from app.services import user_service, guesthouse_service, booking_service 
+    app.run(debug=True, port=5001) # Changed port to 5001 to avoid conflict with React default
+</file>
+
+<file path="frontend/.env">
+VITE_API_BASE_URL=http://localhost:5001/api
+</file>
+
+<file path="frontend/.gitignore">
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+</file>
+
+<file path="frontend/eslint.config.js">
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+
+export default [
+  { ignores: ['dist'] },
+  {
+    files: ['**/*.{js,jsx}'],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        ecmaFeatures: { jsx: true },
+        sourceType: 'module',
+      },
+    },
+    plugins: {
+      'react-hooks': reactHooks,
+      'react-refresh': reactRefresh,
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      ...reactHooks.configs.recommended.rules,
+      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      'react-refresh/only-export-components': [
+        'warn',
+        { allowConstantExport: true },
+      ],
+    },
+  },
+]
+</file>
+
+<file path="frontend/index.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="C:\ZPersonal\NEEPCO\Guest- House\GuestHouse\neepco_guesthouse\download.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NEEPCO  GH BOOKING</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+</file>
+
+<file path="frontend/package.json">
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.9.0",
+    "date-fns": "^4.1.0",
+    "jwt-decode": "^4.0.0",
+    "react": "^19.1.0",
+    "react-datepicker": "^8.4.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.25.0",
+    "@types/react": "^19.1.2",
+    "@types/react-dom": "^19.1.2",
+    "@vitejs/plugin-react": "^4.4.1",
+    "autoprefixer": "^10.4.21",
+    "eslint": "^9.25.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "eslint-plugin-react-refresh": "^0.4.19",
+    "globals": "^16.0.0",
+    "postcss": "^8.5.4",
+    "tailwindcss": "^3.3.2",
+    "vite": "^6.3.5"
+  }
+}
+</file>
+
+<file path="frontend/postcss.config.js">
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+</file>
+
+<file path="frontend/public/vite.svg">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>
+</file>
+
+<file path="frontend/README.md">
+# React + Vite
+
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+
+Currently, two official plugins are available:
+
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+
+## Expanding the ESLint configuration
+
+If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+</file>
+
+<file path="frontend/src/App.css">
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+</file>
+
+<file path="frontend/src/App.jsx">
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import Navbar from './components/Shared/Navbar';
+import LoginPage from './components/Auth/LoginPage';
+import UserDashboard from './components/User/UserDashboard';
+// import GuesthouseList from './components/User/GuesthouseList'; // if using sub-routes
+// import MyBookings from './components/User/MyBookings'; // if using sub-routes
+import AdminDashboard from './components/Admin/AdminDashboard';
+import ProtectedRoute from './components/Shared/ProtectedRoute';
+
+function AppContent() {
+  const { authState } = useAuth();
+
+  return (
+    <>
+      <Navbar />
+      <main className="mt-4">
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+
+          {/* User Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['user', 'admin']} />}>
+            <Route path="/dashboard" element={<UserDashboard />}>
+              {/* Example sub-routes for UserDashboard if you prefer that structure
+              <Route index element={<Navigate to="guesthouses" />} />
+              <Route path="guesthouses" element={<GuesthouseList />} />
+              <Route path="my-bookings" element={<MyBookings />} />
+              */}
+            </Route>
+          </Route>
+
+          {/* Admin Routes */}
+          <Route element={<ProtectedRoute allowedRoles={['admin']} />}>
+            <Route path="/admin" element={<AdminDashboard />} />
+          </Route>
+          
+          <Route 
+            path="/" 
+            element={
+              authState.isLoading ? <div>Loading...</div> : 
+              authState.isAuthenticated ? (
+                authState.user?.role === 'admin' ? <Navigate to="/admin" /> : <Navigate to="/dashboard" />
+              ) : (
+                <Navigate to="/login" />
+              )
+            } 
+          />
+          <Route path="*" element={<Navigate to="/" />} /> {/* Catch-all */}
+        </Routes>
+      </main>
+    </>
+  );
+}
+
+function App() {
+  return (
+    <Router>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </Router>
+  );
+}
+
+export default App;
+</file>
+
+<file path="frontend/src/assets/react.svg">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="35.93" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 228"><path fill="#00D8FF" d="M210.483 73.824a171.49 171.49 0 0 0-8.24-2.597c.465-1.9.893-3.777 1.273-5.621c6.238-30.281 2.16-54.676-11.769-62.708c-13.355-7.7-35.196.329-57.254 19.526a171.23 171.23 0 0 0-6.375 5.848a155.866 155.866 0 0 0-4.241-3.917C100.759 3.829 77.587-4.822 63.673 3.233C50.33 10.957 46.379 33.89 51.995 62.588a170.974 170.974 0 0 0 1.892 8.48c-3.28.932-6.445 1.924-9.474 2.98C17.309 83.498 0 98.307 0 113.668c0 15.865 18.582 31.778 46.812 41.427a145.52 145.52 0 0 0 6.921 2.165a167.467 167.467 0 0 0-2.01 9.138c-5.354 28.2-1.173 50.591 12.134 58.266c13.744 7.926 36.812-.22 59.273-19.855a145.567 145.567 0 0 0 5.342-4.923a168.064 168.064 0 0 0 6.92 6.314c21.758 18.722 43.246 26.282 56.54 18.586c13.731-7.949 18.194-32.003 12.4-61.268a145.016 145.016 0 0 0-1.535-6.842c1.62-.48 3.21-.974 4.76-1.488c29.348-9.723 48.443-25.443 48.443-41.52c0-15.417-17.868-30.326-45.517-39.844Zm-6.365 70.984c-1.4.463-2.836.91-4.3 1.345c-3.24-10.257-7.612-21.163-12.963-32.432c5.106-11 9.31-21.767 12.459-31.957c2.619.758 5.16 1.557 7.61 2.4c23.69 8.156 38.14 20.213 38.14 29.504c0 9.896-15.606 22.743-40.946 31.14Zm-10.514 20.834c2.562 12.94 2.927 24.64 1.23 33.787c-1.524 8.219-4.59 13.698-8.382 15.893c-8.067 4.67-25.32-1.4-43.927-17.412a156.726 156.726 0 0 1-6.437-5.87c7.214-7.889 14.423-17.06 21.459-27.246c12.376-1.098 24.068-2.894 34.671-5.345a134.17 134.17 0 0 1 1.386 6.193ZM87.276 214.515c-7.882 2.783-14.16 2.863-17.955.675c-8.075-4.657-11.432-22.636-6.853-46.752a156.923 156.923 0 0 1 1.869-8.499c10.486 2.32 22.093 3.988 34.498 4.994c7.084 9.967 14.501 19.128 21.976 27.15a134.668 134.668 0 0 1-4.877 4.492c-9.933 8.682-19.886 14.842-28.658 17.94ZM50.35 144.747c-12.483-4.267-22.792-9.812-29.858-15.863c-6.35-5.437-9.555-10.836-9.555-15.216c0-9.322 13.897-21.212 37.076-29.293c2.813-.98 5.757-1.905 8.812-2.773c3.204 10.42 7.406 21.315 12.477 32.332c-5.137 11.18-9.399 22.249-12.634 32.792a134.718 134.718 0 0 1-6.318-1.979Zm12.378-84.26c-4.811-24.587-1.616-43.134 6.425-47.789c8.564-4.958 27.502 2.111 47.463 19.835a144.318 144.318 0 0 1 3.841 3.545c-7.438 7.987-14.787 17.08-21.808 26.988c-12.04 1.116-23.565 2.908-34.161 5.309a160.342 160.342 0 0 1-1.76-7.887Zm110.427 27.268a347.8 347.8 0 0 0-7.785-12.803c8.168 1.033 15.994 2.404 23.343 4.08c-2.206 7.072-4.956 14.465-8.193 22.045a381.151 381.151 0 0 0-7.365-13.322Zm-45.032-43.861c5.044 5.465 10.096 11.566 15.065 18.186a322.04 322.04 0 0 0-30.257-.006c4.974-6.559 10.069-12.652 15.192-18.18ZM82.802 87.83a323.167 323.167 0 0 0-7.227 13.238c-3.184-7.553-5.909-14.98-8.134-22.152c7.304-1.634 15.093-2.97 23.209-3.984a321.524 321.524 0 0 0-7.848 12.897Zm8.081 65.352c-8.385-.936-16.291-2.203-23.593-3.793c2.26-7.3 5.045-14.885 8.298-22.6a321.187 321.187 0 0 0 7.257 13.246c2.594 4.48 5.28 8.868 8.038 13.147Zm37.542 31.03c-5.184-5.592-10.354-11.779-15.403-18.433c4.902.192 9.899.29 14.978.29c5.218 0 10.376-.117 15.453-.343c-4.985 6.774-10.018 12.97-15.028 18.486Zm52.198-57.817c3.422 7.8 6.306 15.345 8.596 22.52c-7.422 1.694-15.436 3.058-23.88 4.071a382.417 382.417 0 0 0 7.859-13.026a347.403 347.403 0 0 0 7.425-13.565Zm-16.898 8.101a358.557 358.557 0 0 1-12.281 19.815a329.4 329.4 0 0 1-23.444.823c-7.967 0-15.716-.248-23.178-.732a310.202 310.202 0 0 1-12.513-19.846h.001a307.41 307.41 0 0 1-10.923-20.627a310.278 310.278 0 0 1 10.89-20.637l-.001.001a307.318 307.318 0 0 1 12.413-19.761c7.613-.576 15.42-.876 23.31-.876H128c7.926 0 15.743.303 23.354.883a329.357 329.357 0 0 1 12.335 19.695a358.489 358.489 0 0 1 11.036 20.54a329.472 329.472 0 0 1-11 20.722Zm22.56-122.124c8.572 4.944 11.906 24.881 6.52 51.026c-.344 1.668-.73 3.367-1.15 5.09c-10.622-2.452-22.155-4.275-34.23-5.408c-7.034-10.017-14.323-19.124-21.64-27.008a160.789 160.789 0 0 1 5.888-5.4c18.9-16.447 36.564-22.941 44.612-18.3ZM128 90.808c12.625 0 22.86 10.235 22.86 22.86s-10.235 22.86-22.86 22.86s-22.86-10.235-22.86-22.86s10.235-22.86 22.86-22.86Z"></path></svg>
+</file>
+
+<file path="frontend/src/components/Admin/AdminDashboard.jsx">
+import React, { useState } from 'react';
+import AllBookingsTable from './AllBookingsTable';
+import PendingApprovalsTable from './PendingApprovalsTable';
+// import { exportDatabaseAdmin } from '../../services/api'; // No longer needed
+
+const AdminDashboard = () => {
+  const [activeTab, setActiveTab] = useState('pending'); // 'pending' or 'all'
+  // const [exportMessage, setExportMessage] = useState(''); // No longer needed for this button
+
+  /* // This handler is no longer needed as the button is removed
+  const handleExportDB = async () => {
+     setExportMessage('Exporting...');
+     try {
+         const response = await exportDatabaseAdmin();
+         setExportMessage(response.data.msg || "Export successful!");
+     } catch (error) {
+         setExportMessage(error.response?.data?.msg || "Export failed.");
+         console.error("Export error:", error);
+     }
+  };
+  */
+
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-6 text-gray-700">Admin Dashboard</h1>
+      
+      {/* Button and export message removed from here */}
+      {/*
+      <div className="mb-4">
+         <button onClick={handleExportDB} className="btn-primary mr-4">Export Bookings to SQLite</button>
+         {exportMessage && <span className="text-sm text-gray-600">{exportMessage}</span>}
+      </div>
+      */}
+
+      <div className="mb-4 border-b border-gray-200">
+        <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+          <button
+            onClick={() => setActiveTab('pending')}
+            className={`${
+              activeTab === 'pending'
+                ? 'border-indigo-500 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm focus:outline-none`}
+            aria-current={activeTab === 'pending' ? 'page' : undefined}
+          >
+            Pending Approvals
+          </button>
+          <button
+            onClick={() => setActiveTab('all')}
+            className={`${
+              activeTab === 'all'
+                ? 'border-indigo-500 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            } whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm focus:outline-none`}
+            aria-current={activeTab === 'all' ? 'page' : undefined}
+          >
+            All Bookings
+          </button>
+        </nav>
+      </div>
+
+      {activeTab === 'pending' && <PendingApprovalsTable />}
+      {activeTab === 'all' && <AllBookingsTable />}
+    </div>
+  );
+};
+
+export default AdminDashboard;
+</file>
+
+<file path="frontend/src/components/Admin/AllBookingsTable.jsx">
+import React, { useState, useEffect, useCallback } from 'react';
+import { fetchAllBookingsAdmin, approveBookingAdmin, rejectBookingAdmin } from '../../services/api';
+
+const AllBookingsTable = () => {
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState({ id: null, text: '', type: '' });
+
+  const loadAllBookings = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const response = await fetchAllBookingsAdmin();
+      setBookings(response.data.sort((a, b) => new Date(b.booked_at.split('-').reverse().join('-')) - new Date(a.booked_at.split('-').reverse().join('-')))); // Sort by booked_at desc
+    } catch (err) {
+      setError('Failed to fetch all bookings.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadAllBookings();
+  }, [loadAllBookings]);
+
+  const handleAction = async (bookingId, actionType) => {
+    setActionMessage({ id: bookingId, text: 'Processing...', type: 'info' });
+    try {
+      let response;
+      if (actionType === 'approve') {
+        response = await approveBookingAdmin(bookingId);
+      } else if (actionType === 'reject') {
+        response = await rejectBookingAdmin(bookingId);
+      }
+      setActionMessage({ id: bookingId, text: response.data.msg || `Action ${actionType} successful!`, type: 'success' });
+      loadAllBookings(); // Refresh
+    } catch (err) {
+      setActionMessage({ id: bookingId, text: err.response?.data?.msg || `Failed to ${actionType} booking.`, type: 'error' });
+      console.error(err);
+    }
+  };
+
+
+  if (loading) return <p className="text-gray-600">Loading all bookings...</p>;
+  if (error) return <p className="text-red-500">{error}</p>;
+
+  return (
+    <div className="card overflow-x-auto">
+      <h2 className="text-xl font-semibold mb-4 text-gray-700">All Bookings</h2>
+      {bookings.length === 0 ? (
+        <p className="text-gray-500">No bookings found.</p>
+      ) : (
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Guesthouse</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Dates</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Booked At</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {bookings.map((booking) => (
+              <tr key={booking.booking_id}>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 truncate" title={booking.booking_id}>{booking.booking_id.substring(0,8)}...</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{booking.guesthouse_name || booking.guesthouse_id}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.username}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.start_date} - {booking.end_date}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.booked_at}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm">
+                   <span
+                      className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        booking.status === 'confirmed' ? 'bg-green-100 text-green-800' :
+                        booking.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                        booking.status === 'cancelled' ? 'bg-red-100 text-red-800' :
+                        booking.status === 'rejected' ? 'bg-pink-100 text-pink-800' :
+                        'bg-gray-100 text-gray-800'
+                      }`}
+                    >
+                      {booking.status}
+                    </span>
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                  {booking.status === 'pending' && (
+                    <>
+                      <button
+                        onClick={() => handleAction(booking.booking_id, 'approve')}
+                        className="text-indigo-600 hover:text-indigo-900 mr-2 text-xs"
+                        disabled={actionMessage.id === booking.booking_id && actionMessage.type === 'info'}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => handleAction(booking.booking_id, 'reject')}
+                        className="text-red-600 hover:text-red-900 text-xs"
+                        disabled={actionMessage.id === booking.booking_id && actionMessage.type === 'info'}
+                      >
+                        Reject
+                      </button>
+                    </>
+                  )}
+                  {actionMessage.id === booking.booking_id && actionMessage.text && (
+                     <span className={`ml-2 text-xs ${actionMessage.type === 'success' ? 'text-green-600' : actionMessage.type === 'error' ? 'text-red-600' : 'text-blue-600'}`}>
+                       {actionMessage.type === 'info' ? 'Processing...' : actionMessage.type === 'success' ? 'Done!' : 'Failed'}
+                     </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+export default AllBookingsTable;
+</file>
+
+<file path="frontend/src/components/Admin/PendingApprovalsTable.jsx">
+import React, { useState, useEffect, useCallback } from 'react';
+import { fetchPendingBookingsAdmin, approveBookingAdmin, rejectBookingAdmin } from '../../services/api';
+
+const PendingApprovalsTable = () => {
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState({ id: null, text: '', type: '' }); // type: 'info', 'success', 'error'
+
+  const loadPendingBookings = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError('');
+      setActionMessage({ id: null, text: '', type: '' }); // Clear previous messages
+      const response = await fetchPendingBookingsAdmin();
+      // Backend should already filter for pending, sort by booked_at
+      setBookings(response.data.sort((a, b) => new Date(a.booked_at.split('-').reverse().join('-')) - new Date(b.booked_at.split('-').reverse().join('-')))); // Sort by booked_at asc for pending
+    } catch (err) {
+      setError('Failed to fetch pending bookings.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPendingBookings();
+  }, [loadPendingBookings]);
+
+  const handleAction = async (bookingId, actionType) => {
+    setActionMessage({ id: bookingId, text: 'Processing...', type: 'info' });
+    try {
+      let response;
+      if (actionType === 'approve') {
+        response = await approveBookingAdmin(bookingId);
+      } else if (actionType === 'reject') {
+        response = await rejectBookingAdmin(bookingId);
+      }
+      setActionMessage({ id: bookingId, text: response.data.msg || `${actionType.charAt(0).toUpperCase() + actionType.slice(1)} successful!`, type: 'success' });
+      // Refresh list after action
+      loadPendingBookings();
+    } catch (err) {
+      setActionMessage({ id: bookingId, text: err.response?.data?.msg || `Failed to ${actionType} booking.`, type: 'error' });
+      console.error(err);
+    }
+  };
+
+  if (loading) return <p className="text-gray-600">Loading pending approvals...</p>;
+  if (error) return <p className="text-red-500">{error}</p>;
+
+  return (
+    <div className="card overflow-x-auto">
+      <h2 className="text-xl font-semibold mb-4 text-gray-700">Pending Booking Approvals</h2>
+      {bookings.length === 0 ? (
+        <p className="text-gray-500">No pending approvals at the moment.</p>
+      ) : (
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Booking ID</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Guesthouse</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requested Dates</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Booked At</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {bookings.map((booking) => (
+              <tr key={booking.booking_id}>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500 truncate" title={booking.booking_id}>{booking.booking_id.substring(0,8)}...</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-900">{booking.guesthouse_name || booking.guesthouse_id}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.username}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.start_date} to {booking.end_date}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-500">{booking.booked_at}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm font-medium">
+                  <button
+                    onClick={() => handleAction(booking.booking_id, 'approve')}
+                    className="btn-primary text-xs mr-2" // Using btn-primary for approve
+                    disabled={actionMessage.id === booking.booking_id && actionMessage.type === 'info'}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => handleAction(booking.booking_id, 'reject')}
+                    className="btn-danger text-xs" // Using btn-danger for reject
+                    disabled={actionMessage.id === booking.booking_id && actionMessage.type === 'info'}
+                  >
+                    Reject
+                  </button>
+                  {actionMessage.id === booking.booking_id && actionMessage.text && (
+                     <span className={`ml-2 text-xs ${actionMessage.type === 'success' ? 'text-green-600' : actionMessage.type === 'error' ? 'text-red-600' : 'text-blue-600'}`}>
+                       {actionMessage.type === 'info' ? 'Processing...' : actionMessage.text}
+                     </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+};
+
+export default PendingApprovalsTable;
+</file>
+
+<file path="frontend/src/components/Auth/LoginPage.jsx">
+import React, { useState, useEffect } from 'react';
+import { useNavigate, Navigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+import { loginUser } from '../../services/api';
+
+const LoginPage = () => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const { authState, login, logout } = useAuth(); // Get authState, login, and logout
+  const navigate = useNavigate();
+
+  // Effect to handle dialog if user lands on login page while authenticated
+  // This runs once when the component mounts or when authState.isAuthenticated changes.
+  useEffect(() => {
+    if (authState.isAuthenticated) {
+      // This is the modal dialog part
+      // It will show *before* the Navigate component below takes effect if the user somehow lands here.
+      const wantsToStayOrLogout = window.confirm(
+        "You are already logged in.\n\n- Click 'OK' to proceed to your dashboard.\n- Click 'Cancel' to log out and stay on the login page."
+      );
+
+      if (wantsToStayOrLogout) {
+        // User wants to go to their dashboard. The <Navigate> component below will handle this.
+        // No specific action needed here other than letting the component re-render.
+      } else {
+        // User clicked 'Cancel', so log them out.
+        logout();
+        // After logout, they will remain on the login page as authState.isAuthenticated will be false.
+        // The page will re-render, and the <Navigate> logic won't trigger a redirect.
+      }
+    }
+  }, [authState.isAuthenticated, logout, navigate]); // navigate is included if you were to use it inside
+
+  // If user is authenticated AND they chose to proceed to dashboard (or didn't cancel logout prompt)
+  // this Navigate component will redirect them.
+  // This also handles the case where the prompt was skipped or already handled.
+  if (authState.isAuthenticated) {
+    // Check if the logout() call in the useEffect has already set isAuthenticated to false.
+    // If logout() was called, authState.isAuthenticated would be false now, and this block wouldn't run.
+    // So, this block effectively runs if the user chose "OK" in the confirm dialog
+    // or if they arrived here authenticated and the useEffect hasn't run yet or didn't lead to logout.
+    if (authState.user?.role === 'admin') {
+      return <Navigate to="/admin" replace />;
+    }
+    return <Navigate to="/dashboard" replace />;
+  }
+
+  // If we reach here, the user is not authenticated, so we show the login form.
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const response = await loginUser({ username, password });
+      const { access_token, role, username: loggedInUsername } = response.data;
+      login(access_token, { username: loggedInUsername, role });
+      // After successful login, the component will re-render.
+      // The `authState.isAuthenticated` will become true.
+      // The `useEffect` and the `Navigate` component logic at the top will then take care of redirection.
+      // So, explicit navigation here might be redundant but can be kept for clarity if preferred.
+      // if (role === 'admin') {
+      //   navigate('/admin', { replace: true });
+      // } else {
+      //   navigate('/dashboard', { replace: true });
+      // }
+    } catch (err) {
+      setError(err.response?.data?.msg || 'Login failed. Please try again.');
+      console.error(err);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md w-full space-y-8 p-10 bg-white shadow-xl rounded-lg">
+        <div>
+          <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
+            NEEPCO Guest House Login
+          </h2>
+        </div>
+        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
+          {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+          <div className="rounded-md shadow-sm -space-y-px">
+            <div>
+              <label htmlFor="username_field" className="sr-only">Username</label>
+              <input
+                id="username_field"
+                name="username"
+                type="text"
+                autoComplete="username"
+                required
+                className="input-field rounded-t-md"
+                placeholder="Username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="password_field" className="sr-only">Password</label>
+              <input
+                id="password_field"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                className="input-field rounded-b-md"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          </div>
+          <div>
+            <button type="submit" className="btn-primary w-full">
+              Sign in
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+export default LoginPage;
+</file>
+
+<file path="frontend/src/components/Shared/Navbar.jsx">
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+
+const Navbar = () => {
+  const { authState, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  return (
+    <nav className="bg-gray-800 text-white p-4 shadow-md">
+      <div className="container mx-auto flex justify-between items-center">
+        <Link to="/" className="text-xl font-bold hover:text-gray-300">
+          NEEPCO Guesthouses
+        </Link>
+        <div>
+          {authState.isAuthenticated ? (
+            <>
+              <span className="mr-4">Welcome, {authState.user?.username} ({authState.user?.role})</span>
+              {authState.user?.role === 'admin' ? (
+                <Link to="/admin" className="mr-3 hover:text-gray-300">Admin Dashboard</Link>
+              ) : (
+                <Link to="/dashboard" className="mr-3 hover:text-gray-300">My Dashboard</Link>
+              )}
+              <button onClick={handleLogout} className="btn-secondary">
+                Logout
+              </button>
+            </>
+          ) : (
+            <Link to="/login" className="btn-primary">Login</Link>
+          )}
+        </div>
+      </div>
+    </nav>
+  );
+};
+export default Navbar;
+</file>
+
+<file path="frontend/src/components/Shared/ProtectedRoute.jsx">
+import React from 'react';
+import { Navigate, Outlet } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
+
+const ProtectedRoute = ({ allowedRoles }) => {
+  const { authState } = useAuth();
+
+  if (authState.isLoading) {
+    return <div>Loading...</div>; // Or a spinner component
+  }
+
+  if (!authState.isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (allowedRoles && !allowedRoles.includes(authState.user?.role)) {
+    // Redirect to a general dashboard or an unauthorized page
+    return <Navigate to={authState.user?.role === 'admin' ? '/admin' : '/dashboard'} replace />;
+  }
+
+  return <Outlet />; // Renders the child route's element
+};
+export default ProtectedRoute;
+</file>
+
+<file path="frontend/src/components/User/BookingModal.jsx">
+import React, { useState, useEffect } from 'react';
+import DatePicker from 'react-datepicker'; // Import DatePicker
+import "react-datepicker/dist/react-datepicker.css"; // Import default styles
+import { format, parse, isValid, isBefore, startOfDay } from 'date-fns'; // For date manipulation
+
+const BookingModal = ({ isOpen, onClose, guesthouse, onSubmit, bookingStatus }) => {
+  // State will now hold Date objects for the pickers
+  const [selectedStartDate, setSelectedStartDate] = useState(null);
+  const [selectedEndDate, setSelectedEndDate] = useState(null);
+  const [localError, setLocalError] = useState('');
+
+  // Reset form when guesthouse changes or modal opens
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedStartDate(null);
+      setSelectedEndDate(null);
+      setLocalError('');
+    }
+  }, [isOpen, guesthouse]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    setLocalError('');
+
+    if (!selectedStartDate || !selectedEndDate) {
+      setLocalError('Both start and end dates are required.');
+      return;
+    }
+
+    // Format Date objects to "dd-MM-yyyy" string for submission
+    const formattedStartDate = format(selectedStartDate, 'dd-MM-yyyy');
+    const formattedEndDate = format(selectedEndDate, 'dd-MM-yyyy');
+    
+    onSubmit(guesthouse.id, formattedStartDate, formattedEndDate);
+  };
+
+  if (!isOpen) return null;
+
+  const today = startOfDay(new Date()); // Get today's date at midnight
+
+  // Handle start date change to clear end date if it becomes invalid
+  const handleStartDateChange = (date) => {
+    setSelectedStartDate(date);
+    if (selectedEndDate && isBefore(selectedEndDate, date)) {
+      setSelectedEndDate(null); // Clear end date if it's before the new start date
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full flex items-center justify-center z-50 p-4">
+      <div className="relative mx-auto p-6 border w-full max-w-md shadow-lg rounded-md bg-white">
+        <div className="mt-3 text-center">
+          <h3 className="text-lg leading-6 font-medium text-gray-900 mb-2">
+            Book: {guesthouse.name}
+          </h3>
+          <p className="text-sm text-gray-500 mb-4">
+            Location: {guesthouse.location} | Capacity: {guesthouse.capacity}
+          </p>
+
+          {bookingStatus && bookingStatus.message && (
+             <div className={`mb-4 p-2 rounded-md text-sm ${bookingStatus.type === 'success' ? 'bg-green-100 text-green-700' : bookingStatus.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+                {bookingStatus.message}
+             </div>
+          )}
+          {localError && (
+            <p className="text-red-500 text-sm mb-3">{localError}</p>
+          )}
+
+          <form onSubmit={handleSubmit} className="space-y-4 text-left"> {/* text-left for labels */}
+            <div>
+              <label htmlFor="start_date_picker" className="block text-sm font-medium text-gray-700 mb-1">
+                Start Date
+              </label>
+              <DatePicker
+                id="start_date_picker"
+                selected={selectedStartDate}
+                onChange={handleStartDateChange}
+                selectsStart
+                startDate={selectedStartDate}
+                endDate={selectedEndDate}
+                minDate={today} // Cannot select past dates
+                dateFormat="dd-MM-yyyy"
+                placeholderText="Select start date"
+                className="input-field w-full" // Apply your existing input style
+                wrapperClassName="w-full" // Ensure wrapper takes full width
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <label htmlFor="end_date_picker" className="block text-sm font-medium text-gray-700 mb-1">
+                End Date
+              </label>
+              <DatePicker
+                id="end_date_picker"
+                selected={selectedEndDate}
+                onChange={(date) => setSelectedEndDate(date)}
+                selectsEnd
+                startDate={selectedStartDate}
+                endDate={selectedEndDate}
+                minDate={selectedStartDate || today} // End date cannot be before start date or today
+                dateFormat="dd-MM-yyyy"
+                placeholderText="Select end date"
+                className="input-field w-full"
+                wrapperClassName="w-full"
+                disabled={!selectedStartDate} // Disable until start date is selected
+                autoComplete="off"
+              />
+            </div>
+            <div className="items-center gap-2 pt-3">
+              <button
+                type="submit"
+                className="btn-primary w-full mb-2"
+                disabled={bookingStatus.type === 'info' || !selectedStartDate || !selectedEndDate} // Disable if submitting or dates not selected
+              >
+                {bookingStatus.type === 'info' ? 'Processing...' : 'Request Booking'}
+              </button>
+              <button
+                type="button"
+                onClick={onClose}
+                className="btn-secondary w-full"
+              >
+                Close
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default BookingModal;
+</file>
+
+<file path="frontend/src/components/User/GuesthouseCard.jsx">
+import React from 'react';
+
+const GuesthouseCard = ({ guesthouse, onBook }) => {
+  return (
+    <div className="card transform hover:scale-105 transition-transform duration-200 ease-in-out">
+      <div className="p-2"> {/* Minimal padding inside card itself for image if any*/}
+        {/* You can add an image here if you have URLs */}
+        {/* <img src={guesthouse.imageUrl || 'https://via.placeholder.com/300x200'} alt={guesthouse.name} className="w-full h-48 object-cover rounded-t-lg"/> */}
+      </div>
+      <div className="p-4"> {/* Padding for text content */}
+        <h3 className="text-xl font-semibold text-gray-800 mb-2 truncate" title={guesthouse.name}>
+          {guesthouse.name}
+        </h3>
+        <p className="text-sm text-gray-600 mb-1">
+          <span className="font-medium">Location:</span> {guesthouse.location}
+        </p>
+        <p className="text-sm text-gray-600 mb-3">
+          <span className="font-medium">Capacity:</span> {guesthouse.capacity} person(s)
+        </p>
+        <button
+          onClick={() => onBook(guesthouse)}
+          className="btn-primary w-full"
+        >
+          Book Now
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default GuesthouseCard;
+</file>
+
+<file path="frontend/src/components/User/GuesthouseList.jsx">
+import React, { useState, useEffect } from 'react';
+import { fetchGuesthouses, requestBooking } from '../../services/api';
+import GuesthouseCard from './GuesthouseCard';
+import BookingModal from './BookingModal';
+
+const GuesthouseList = () => {
+  const [guesthouses, setGuesthouses] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedGuesthouse, setSelectedGuesthouse] = useState(null);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [bookingStatus, setBookingStatus] = useState({ message: '', type: '' }); // 'success' or 'error'
+
+  useEffect(() => {
+    const loadGuesthouses = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        const response = await fetchGuesthouses();
+        setGuesthouses(response.data);
+      } catch (err) {
+        setError('Failed to fetch guesthouses. Please try again later.');
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadGuesthouses();
+  }, []);
+
+  const handleBookClick = (guesthouse) => {
+    setSelectedGuesthouse(guesthouse);
+    setIsModalOpen(true);
+    setBookingStatus({ message: '', type: '' }); // Reset status when opening modal
+  };
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setSelectedGuesthouse(null);
+  };
+
+  const handleBookingSubmit = async (guesthouseId, startDate, endDate) => {
+    try {
+      setBookingStatus({ message: 'Submitting request...', type: 'info' });
+      const response = await requestBooking({ guesthouse_id: guesthouseId, start_date: startDate, end_date: endDate });
+      setBookingStatus({ message: response.data.msg || 'Booking request submitted successfully!', type: 'success' });
+      // Optionally close modal on success or let user close it
+      // setIsModalOpen(false); 
+      // setSelectedGuesthouse(null);
+      // You might want to refresh MyBookings or show a persistent success message
+    } catch (err) {
+      setBookingStatus({ message: err.response?.data?.msg || 'Booking failed. Please check dates or availability.', type: 'error' });
+      console.error(err);
+    }
+  };
+
+  if (loading) return <p className="text-center text-gray-600">Loading guesthouses...</p>;
+  if (error) return <p className="text-center text-red-500">{error}</p>;
+
+  return (
+    <div className="space-y-6">
+      {bookingStatus.message && (
+        <div className={`p-3 rounded-md ${bookingStatus.type === 'success' ? 'bg-green-100 text-green-700' : bookingStatus.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}`}>
+          {bookingStatus.message}
+        </div>
+      )}
+      {guesthouses.length === 0 && !loading && (
+        <p className="text-center text-gray-500">No guesthouses available at the moment.</p>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {guesthouses.map((guesthouse) => (
+          <GuesthouseCard
+            key={guesthouse.id}
+            guesthouse={guesthouse}
+            onBook={() => handleBookClick(guesthouse)}
+          />
+        ))}
+      </div>
+      {selectedGuesthouse && (
+        <BookingModal
+          isOpen={isModalOpen}
+          onClose={handleCloseModal}
+          guesthouse={selectedGuesthouse}
+          onSubmit={handleBookingSubmit}
+          bookingStatus={bookingStatus} // Pass status to modal if needed for display there too
+        />
+      )}
+    </div>
+  );
+};
+
+export default GuesthouseList;
+</file>
+
+<file path="frontend/src/components/User/MyBookings.jsx">
+import React, { useState, useEffect, useCallback } from 'react';
+import { fetchMyBookings, cancelUserBooking } from '../../services/api';
+
+const MyBookings = () => {
+  const [bookings, setBookings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [actionMessage, setActionMessage] = useState({ text: '', type: '' }); // 'success' or 'error'
+
+  const loadBookings = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const response = await fetchMyBookings();
+      // Assuming guesthouse name might not be directly in my bookings, but it should be via merge on backend
+      // Or you'd need another fetch or pass guesthouse data around
+      setBookings(response.data.sort((a, b) => new Date(b.booked_at.split('-').reverse().join('-')) - new Date(a.booked_at.split('-').reverse().join('-')))); // Sort by booked_at desc
+    } catch (err) {
+      setError('Failed to fetch your bookings.');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBookings();
+  }, [loadBookings]);
+
+  const handleCancel = async (bookingId) => {
+    setActionMessage({ text: '', type: '' });
+    if (window.confirm('Are you sure you want to cancel this booking?')) {
+      try {
+        const response = await cancelUserBooking(bookingId);
+        setActionMessage({ text: response.data.msg || 'Booking cancelled successfully!', type: 'success' });
+        loadBookings(); // Refresh the list
+      } catch (err) {
+        setActionMessage({ text: err.response?.data?.msg || 'Failed to cancel booking.', type: 'error' });
+        console.error(err);
+      }
+    }
+  };
+
+  if (loading) return <p className="text-gray-600">Loading your bookings...</p>;
+  if (error) return <p className="text-red-500">{error}</p>;
+
+  return (
+    <div className="card">
+      {actionMessage.text && (
+        <div className={`mb-4 p-3 rounded-md text-sm ${actionMessage.type === 'success' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+          {actionMessage.text}
+        </div>
+      )}
+      {bookings.length === 0 ? (
+        <p className="text-gray-500">You have no bookings yet.</p>
+      ) : (
+        <ul className="space-y-4">
+          {bookings.map((booking) => (
+            <li key={booking.booking_id} className="p-4 border border-gray-200 rounded-md shadow-sm bg-white">
+              <div className="flex justify-between items-start">
+                <div>
+                  <h4 className="font-semibold text-lg text-indigo-700">
+                    Guesthouse ID: {booking.guesthouse_id} {/* Replace with Guesthouse Name if available */}
+                  </h4>
+                  <p className="text-sm text-gray-600">
+                    Dates: {booking.start_date} to {booking.end_date}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Booked On: {booking.booked_at}
+                  </p>
+                  <p className="text-sm">
+                    Status:{" "}
+                    <span
+                      className={`font-semibold ${
+                        booking.status === 'confirmed' ? 'text-green-600' :
+                        booking.status === 'pending' ? 'text-yellow-600' :
+                        booking.status === 'cancelled' ? 'text-red-600' :
+                        booking.status === 'rejected' ? 'text-red-700' :
+                        'text-gray-600'
+                      }`}
+                    >
+                      {booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+                    </span>
+                  </p>
+                </div>
+                {(booking.status === 'pending' || booking.status === 'confirmed') && (
+                  <button
+                    onClick={() => handleCancel(booking.booking_id)}
+                    className="btn-danger text-xs"
+                  >
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+export default MyBookings;
+</file>
+
+<file path="frontend/src/components/User/UserDashboard.jsx">
+import React from 'react';
+import { Link, Outlet } from 'react-router-dom';
+import GuesthouseList from './GuesthouseList'; // You'll create this
+import MyBookings from './MyBookings'; // You'll create this
+
+const UserDashboard = () => {
+  return (
+    <div className="container mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-6 text-gray-700">User Dashboard</h1>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+         <div className="md:col-span-2">
+             <h2 className="text-2xl font-semibold mb-4 text-gray-600">Available Guesthouses</h2>
+             <GuesthouseList />
+         </div>
+         <div>
+             <h2 className="text-2xl font-semibold mb-4 text-gray-600">My Bookings</h2>
+             <MyBookings />
+         </div>
+      </div>
+      {/* If you prefer sub-routes for user dashboard sections:
+      <nav className="mb-4">
+        <Link to="guesthouses" className="mr-2 btn-primary">View Guesthouses</Link>
+        <Link to="my-bookings" className="btn-secondary">My Bookings</Link>
+      </nav>
+      <Outlet />
+      */}
+    </div>
+  );
+};
+export default UserDashboard;
+</file>
+
+<file path="frontend/src/context/AuthContext.jsx">
+import React, { createContext, useState, useContext, useEffect } from 'react';
+import { jwtDecode } from 'jwt-decode'; // Install: npm install jwt-decode
+
+const AuthContext = createContext(null);
+
+export const AuthProvider = ({ children }) => {
+  const [authState, setAuthState] = useState({
+    token: localStorage.getItem('accessToken'),
+    isAuthenticated: false,
+    user: null, // { username, role }
+    isLoading: true,
+  });
+
+  useEffect(() => {
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      try {
+        const decodedToken = jwtDecode(token);
+        // Check token expiration (optional, backend handles it mostly)
+        if (decodedToken.exp * 1000 > Date.now()) {
+          setAuthState({
+            token: token,
+            isAuthenticated: true,
+            user: { username: decodedToken.sub, role: decodedToken.role },
+            isLoading: false,
+          });
+        } else {
+          // Token expired
+          localStorage.removeItem('accessToken');
+          setAuthState({ token: null, isAuthenticated: false, user: null, isLoading: false });
+        }
+      } catch (error) {
+        console.error("Invalid token:", error);
+        localStorage.removeItem('accessToken');
+        setAuthState({ token: null, isAuthenticated: false, user: null, isLoading: false });
+      }
+    } else {
+      setAuthState({ token: null, isAuthenticated: false, user: null, isLoading: false });
+    }
+  }, []);
+
+  const login = (token, userData) => {
+    localStorage.setItem('accessToken', token);
+    setAuthState({
+      token: token,
+      isAuthenticated: true,
+      user: userData, // { username, role }
+      isLoading: false,
+    });
+  };
+
+  const logout = () => {
+    localStorage.removeItem('accessToken');
+    setAuthState({
+      token: null,
+      isAuthenticated: false,
+      user: null,
+      isLoading: false,
+    });
+  };
+
+  return (
+    <AuthContext.Provider value={{ authState, login, logout }}>
+      {!authState.isLoading && children}
+    </AuthContext.Provider>
+  );
+};
+
+export const useAuth = () => useContext(AuthContext);
+</file>
+
+<file path="frontend/src/index.css">
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Basic body styling */
+body {
+  @apply bg-gray-100 text-gray-800;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Example custom component style (optional) */
+.btn-primary {
+  @apply bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out;
+}
+.btn-secondary {
+  @apply bg-gray-500 hover:bg-gray-600 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out;
+}
+.btn-danger {
+  @apply bg-red-500 hover:bg-red-600 text-white font-bold py-2 px-4 rounded transition duration-150 ease-in-out;
+}
+.input-field {
+  @apply mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm;
+}
+.card {
+ @apply bg-white shadow-lg rounded-lg p-6;
+}
+</file>
+
+<file path="frontend/src/main.jsx">
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import App from './App';
+import './index.css'; // Tailwind styles
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
+</file>
+
+<file path="frontend/src/services/api.js">
+import axios from 'axios';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001/api';
+
+const apiClient = axios.create({
+  baseURL: API_BASE_URL,
+});
+
+apiClient.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  }
+);
+
+// Auth Service
+export const loginUser = (credentials) => apiClient.post('/login', credentials);
+
+// Guesthouse Service
+export const fetchGuesthouses = () => apiClient.get('/guesthouses');
+
+// Booking Service
+export const requestBooking = (bookingData) => apiClient.post('/bookings/request', bookingData);
+export const fetchMyBookings = () => apiClient.get('/bookings/my');
+export const cancelUserBooking = (bookingId) => apiClient.post(`/bookings/cancel/${bookingId}`);
+
+// Admin Service
+export const fetchAllBookingsAdmin = () => apiClient.get('/admin/bookings/all');
+export const fetchPendingBookingsAdmin = () => apiClient.get('/admin/bookings/pending');
+export const approveBookingAdmin = (bookingId) => apiClient.post(`/admin/bookings/approve/${bookingId}`);
+export const rejectBookingAdmin = (bookingId) => apiClient.post(`/admin/bookings/reject/${bookingId}`);
+export const exportDatabaseAdmin = () => apiClient.post('/admin/export-db');
+
+export default apiClient;
+</file>
+
+<file path="frontend/tailwind.config.js">
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {},
+  },
+  plugins: [],
+}
+</file>
+
+<file path="frontend/vite.config.js">
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+</file>
+
+</files>
