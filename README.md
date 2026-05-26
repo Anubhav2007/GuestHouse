@@ -1,6 +1,20 @@
-# 🏢 NEEPCO Guest House Booking System
+## 📋 Project Overview
 
-A premium, secure, and modern web application designed to streamline the reservation and management of NEEPCO guest houses for officers and administrators. Built with a robust Python/Flask backend and a lightning-fast React/Vite frontend.
+The **NEEPCO Guest House Booking System** is an enterprise-grade digital solution designed for the North Eastern Electric Power Corporation (NEEPCO). The system replaces manual, paper-based, or fragmented booking procedures with a unified, high-performance, and responsive digital platform.
+
+### 💡 The Operational Challenge & Solution
+NEEPCO manages multiple guest houses across diverse geographical locations to accommodate officers traveling on duty or personal leave. Coordinating room availability, capacity, and approval hierarchies manually can lead to scheduling conflicts (double bookings) and administrative overhead. 
+
+This application resolves these challenges by providing:
+1. **Real-time Availability Tracking**: Instant access to guest house capacities, room status, and active reservations.
+2. **Automated Approval Workflow**: Booking requests submitted by officers are securely queued for administrator review with clear audit status.
+3. **Fail-safe Synchronization**: A dual-layer data architecture that combines the accessibility of plain CSV files (ideal for quick manual checks and reports) with the relational query power of SQLite.
+
+### 🔄 Dual-Layer Data Sync Engine
+To ensure high reliability and low latency, the system utilizes a unique synchronization model managed by the backend:
+* **Write Path**: Bookings are processed and validated, written to the SQLite database (`instance/bookings.db`) for transaction safety, and then instantly flushed to `data/bookings.csv` for human-readable persistence.
+* **Read Path**: The Flask server queries SQLite directly, delivering fast, indexed response times to the React frontend.
+* **Startup Reconciliation**: On server boot, the application performs an automated initialization that parses the CSV registries, synchronizes any manual CSV edits, and updates the SQLite database seamlessly.
 
 ---
 
@@ -39,136 +53,3 @@ A premium, secure, and modern web application designed to streamline the reserva
 - **Environment Config**: python-dotenv
 - **Data Engineering**: Pandas & NumPy (handling CSV database synchronization and query processing)
 - **Database**: SQLite (local storage)
-
----
-
-## 📂 Repository Structure
-
-```
-GuestHouse/
-├── backend/
-│   ├── app/
-│   │   ├── __init__.py      # App factory and initialization
-│   │   ├── auth.py          # Auth blueprint & JWT generation
-│   │   ├── routes.py        # API routing & resource logic
-│   │   ├── services.py      # Core data services and CSV/SQLite synchronization
-│   │   └── utils.py         # Validation and general helpers
-│   ├── data/
-│   │   ├── bookings.csv     # Persistent CSV booking registry
-│   │   ├── guesthouses.csv  # Guest house listings
-│   │   └── users.csv        # Pre-configured user/admin registry
-│   ├── instance/
-│   │   └── bookings.db      # High-performance SQLite database
-│   ├── .env                 # Backend environment secrets
-│   ├── run.py               # Main entry point (port 5001)
-│   └── venv/                # Python virtual environment
-├── frontend/
-│   ├── public/              # Static assets
-│   ├── src/
-│   │   ├── assets/          # Static images
-│   │   ├── components/      # UI components (Admin/User/Shared)
-│   │   │   ├── Admin/       # Admin Dashboards & Tables
-│   │   │   ├── Auth/        # LoginPage component
-│   │   │   ├── Shared/      # Navbar & Protected routes
-│   │   │   └── User/        # Booking modal & Guest house lists
-│   │   ├── context/         # Authentication Context providers
-│   │   ├── services/        # Axios API client
-│   │   ├── App.jsx          # Route configurations
-│   │   └── main.jsx         # App entry point
-│   ├── .env                 # Frontend environment variables
-│   ├── package.json         # Dependencies & scripts
-│   ├── tailwind.config.js   # Tailwind configurations
-│   └── vite.config.js       # Vite build setup
-└── README.md                # Premium documentation (this file)
-```
-
----
-
-## 🚀 Getting Started
-
-### 📋 Prerequisites
-Make sure you have the following installed on your machine:
-* **Python 3.10+**
-* **Node.js 18+** & **npm**
-
----
-
-### 1. Backend Installation & Setup
-
-1. Navigate to the `backend` directory:
-   ```bash
-   cd backend
-   ```
-2. Activate the pre-configured Python virtual environment:
-   * **Windows (PowerShell):**
-     ```powershell
-     .\venv\Scripts\Activate.ps1
-     ```
-   * **macOS/Linux:**
-     ```bash
-     source venv/bin/activate
-     ```
-3. Confirm environment variables inside `.env`:
-   ```ini
-   FLASK_APP=run.py
-   FLASK_ENV=development
-   JWT_SECRET_KEY=your-super-secret-and-long-key
-   ```
-4. Start the Flask server:
-   ```bash
-   python run.py
-   ```
-   *The backend will boot on **[http://localhost:5001](http://localhost:5001)***.
-
----
-
-### 2. Frontend Installation & Setup
-
-1. Navigate to the `frontend` directory:
-   ```bash
-   cd ../frontend
-   ```
-2. Install npm dependencies:
-   ```bash
-   npm install
-   ```
-3. Verify your backend API endpoint in `.env`:
-   ```ini
-   VITE_API_BASE_URL=http://localhost:5001/api
-   ```
-4. Launch the Vite development server:
-   ```bash
-   npm run dev
-   ```
-   *The frontend will run on **[http://localhost:5173](http://localhost:5173)***.
-
----
-
-## 🔌 API Endpoints Reference
-
-### 🔐 Authentication
-* `POST /api/login` - Authenticates user & returns JWT access token and user role payload.
-
-### 🏢 Guest Houses
-* `GET /api/guesthouses` - Returns lists of all available guest houses along with details.
-
-### 📅 Bookings
-* `GET /api/bookings/my` - Retrieves the active authenticated user's personal booking requests.
-* `POST /api/bookings` - Initiates a guest house booking request.
-* `GET /api/bookings` - *(Admin Only)* Returns all guest house bookings in the registry.
-* `POST /api/bookings/<booking_id>/approve` - *(Admin Only)* Approves a booking request.
-* `POST /api/bookings/<booking_id>/reject` - *(Admin Only)* Rejects a booking request.
-* `POST /api/bookings/<booking_id>/cancel` - Cancels an existing booking.
-
----
-
-## 🧪 Pre-configured Accounts
-
-Use these pre-seeded accounts in `backend/data/users.csv` to explore the system:
-
-| Username | Password | Role |
-|---|---|---|
-| `neepco_admin` | `rootadmin` | **Admin** |
-| `Deepankar` | `papa123` | **Admin** |
-| `Anubhav123` | `securepass` | **User** |
-| `testuser` | `testpass` | **User** |
